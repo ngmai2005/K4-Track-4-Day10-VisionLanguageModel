@@ -80,13 +80,13 @@ def lora_module_names(model, include_vit: bool) -> list[str]:
     import re
 
     llm = re.compile(
-        r"(?:^|\\.)language_model\\.layers\\.\\d+\\."
-        r"(?:self_attn\\.(?:q_proj|k_proj|v_proj|o_proj)|"
-        r"mlp\\.(?:gate_proj|up_proj|down_proj))$"
+        r"(?:^|\.)language_model\.layers\.\d+\."
+        r"(?:self_attn\.(?:q_proj|k_proj|v_proj|o_proj)|"
+        r"mlp\.(?:gate_proj|up_proj|down_proj))$"
     )
     vit = re.compile(
-        r"(?:^|\\.)visual\\.blocks\\.\\d+\\."
-        r"(?:attn\\.(?:qkv|proj)|mlp\\.(?:linear_fc1|linear_fc2))$"
+        r"(?:^|\.)visual\.blocks\.\d+\."
+        r"(?:attn\.(?:qkv|proj)|mlp\.(?:linear_fc1|linear_fc2))$"
     )
     names = [name for name, _ in model.named_modules() if llm.search(name)]
     if include_vit:
