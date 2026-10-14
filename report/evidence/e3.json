@@ -1,0 +1,63 @@
+{
+  "n_images": 311,
+  "parse_valid_rate": 0.99,
+  "missing_predictions": 0,
+  "micro": {
+    "precision": 0.6703,
+    "recall": 0.6312,
+    "f1": 0.6502,
+    "tp": 368,
+    "fp": 181,
+    "fn": 215
+  },
+  "per_class": {
+    "pothole": {
+      "precision": 0.7131,
+      "recall": 0.719,
+      "f1": 0.716,
+      "tp": 87,
+      "fp": 35,
+      "fn": 34
+    },
+    "crack": {
+      "precision": 0.63,
+      "recall": 0.5753,
+      "f1": 0.6014,
+      "tp": 172,
+      "fp": 101,
+      "fn": 127
+    },
+    "manhole": {
+      "precision": 0.7078,
+      "recall": 0.6687,
+      "f1": 0.6877,
+      "tp": 109,
+      "fp": 45,
+      "fn": 54
+    },
+    "other": {
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": 0.0,
+      "tp": 0,
+      "fp": 0,
+      "fn": 0
+    }
+  },
+  "mean_iou": 0.741,
+  "fp_per_image": 0.582,
+  "f1_ci95": [
+    0.608,
+    0.69
+  ],
+  "score_version": 1,
+  "name": "E3",
+  "dataset_version": "d10-21e4070301",
+  "split": "test",
+  "coord": "norm1000",
+  "meta": {
+    "trainable_params": 135593984,
+    "peak_vram_gb": 13.8,
+    "train_minutes": 36.2
+  }
+}
