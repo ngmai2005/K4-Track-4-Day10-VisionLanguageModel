@@ -44,3 +44,41 @@ def objects_to_answer(objects: Iterable[dict]) -> str:
     boxes = [yolo_to_box(item["label"], item["yolo"]) for item in objects]
     boxes.sort(key=lambda box: (box["bbox_2d"][1], box["bbox_2d"][0]))
     return json.dumps(boxes, ensure_ascii=False, separators=(",", ":"))
+
+
+def compute_reward(completion: str, gt_boxes: list[dict]) -> float:
+    """Compute verifiable IoU reward for GRPO (Bonus E5).
+
+    Returns:
+        1.0 for perfect match or both empty, 0.0 for invalid JSON, or
+        0.2 + 0.8 * (total_matched_iou / max(len(gt), len(pred), 1)).
+    """
+    from scripts.score import iou_xyxy, parse_output
+
+    pred = parse_output(completion)
+    if pred is None:
+        return 0.0  # JSON hỏng
+    if not gt_boxes and not pred:
+        return 1.0  # Cả hai cùng rỗng
+
+    total_iou = 0.0
+    all_labels = {g["label"] for g in gt_boxes} | {p["label"] for p in pred}
+    for lab in all_labels:
+        g = [x["bbox"] for x in gt_boxes if x["label"] == lab]
+        p = [x["bbox"] for x in pred if x["label"] == lab]
+        pairs = sorted(
+            ((iou_xyxy(a, b), i, j) for i, a in enumerate(g) for j, b in enumerate(p)),
+            reverse=True,
+        )
+        used_g, used_p = set(), set()
+        for v, i, j in pairs:
+            if v < 0.5:
+                break
+            if i in used_g or j in used_p:
+                continue
+            used_g.add(i)
+            used_p.add(j)
+            total_iou += v
+    denom = max(len(gt_boxes), len(pred), 1)
+    return 0.2 + 0.8 * (total_iou / denom)
+

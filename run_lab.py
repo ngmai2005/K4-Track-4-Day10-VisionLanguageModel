@@ -277,9 +277,120 @@ def score(experiment: str, pred_path: Path, metadata: dict | None = None) -> Non
     subprocess.run(command, cwd=ROOT, check=True)
 
 
+def train_grpo(experiment: str, config: dict) -> dict:
+    """Group Relative Policy Optimization with verifiable IoU reward."""
+    import gc
+    import time
+    import torch
+    from PIL import Image
+    from peft import PeftModel
+
+    from lab_helpers import PROMPT, compute_reward
+    from scripts.score import _gt_boxes
+
+    seed_everything(int(config.get("seed", 42)))
+    model, processor = load_base_model()
+    e1_adapter = ROOT / "work/e1/adapter"
+    if e1_adapter.exists():
+        model = PeftModel.from_pretrained(model, e1_adapter, is_trainable=True)
+    else:
+        e1_cfg = load_config("e1")
+        model, _ = apply_setup(model, e1_cfg)
+
+    model.config.use_cache = False
+    model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+
+    trainable = [p for p in model.parameters() if p.requires_grad]
+    trainable_count = sum(p.numel() for p in trainable)
+    grpo_cfg = config.get("grpo", {})
+    lr = float(grpo_cfg.get("learning_rate", 5e-6))
+    optimizer = torch.optim.AdamW(trainable, lr=lr, weight_decay=0.0)
+    steps = int(grpo_cfg.get("max_steps", 60))
+    num_generations = int(grpo_cfg.get("num_generations", 4))
+    max_new_tokens = int(grpo_cfg.get("max_completion_length", 128))
+
+    entries = read_jsonl(ROOT / "data/splits/train.jsonl")
+    rng = random.Random(int(config.get("seed", 42)))
+
+    torch.cuda.reset_peak_memory_stats()
+    started = time.monotonic()
+    model.train()
+
+    for step in range(steps):
+        sample = rng.choice(entries)
+        img = Image.open(ROOT / "data" / sample["image_path"]).convert("RGB")
+        gt = _gt_boxes(sample)
+
+        messages = [{"role": "user", "content": [
+            {"type": "image", "image": img}, {"type": "text", "text": PROMPT},
+        ]}]
+        inputs = processor.apply_chat_template(
+            messages, tokenize=True, add_generation_prompt=True,
+            return_dict=True, return_tensors="pt",
+        ).to("cuda")
+
+        completions = []
+        generated_ids_list = []
+        with torch.no_grad():
+            for _ in range(num_generations):
+                gen = model.generate(
+                    **inputs, max_new_tokens=max_new_tokens,
+                    do_sample=True, temperature=0.8, top_p=0.9,
+                )
+                ans_ids = gen[:, inputs.input_ids.shape[1]:]
+                raw = processor.batch_decode(ans_ids, skip_special_tokens=True)[0].strip()
+                completions.append(raw)
+                generated_ids_list.append(gen)
+
+        rewards = [compute_reward(c, gt) for c in completions]
+        mean_r = sum(rewards) / len(rewards)
+        std_r = (sum((r - mean_r) ** 2 for r in rewards) / len(rewards)) ** 0.5
+        advantages = [(r - mean_r) / (std_r + 1e-4) for r in rewards]
+
+        optimizer.zero_grad(set_to_none=True)
+        step_loss = torch.tensor(0.0, device="cuda")
+        for adv, full_ids in zip(advantages, generated_ids_list):
+            if abs(adv) < 1e-6:
+                continue
+            labels = full_ids.clone()
+            labels[:, :inputs.input_ids.shape[1]] = -100
+            with torch.autocast("cuda", dtype=torch.float16):
+                out = model(
+                    input_ids=full_ids,
+                    pixel_values=inputs.pixel_values,
+                    image_grid_thw=inputs.image_grid_thw,
+                    labels=labels,
+                )
+                loss = out.loss * (-adv) / num_generations
+            loss.backward()
+            step_loss += loss.detach()
+
+        torch.nn.utils.clip_grad_norm_(trainable, 1.0)
+        optimizer.step()
+
+        if (step + 1) % 10 == 0 or step == 0:
+            print(f"E5 GRPO step={step + 1}/{steps} mean_reward={mean_r:.4f} loss={step_loss.item():.4f}")
+
+    adapter_dir = ROOT / "work" / experiment.lower() / "adapter"
+    adapter_dir.mkdir(parents=True, exist_ok=True)
+    model.save_pretrained(adapter_dir)
+    metadata = {
+        "trainable_params": trainable_count,
+        "peak_vram_gb": round(torch.cuda.max_memory_allocated() / 1024**3, 3),
+        "train_minutes": round((time.monotonic() - started) / 60, 3),
+        "grpo_steps": steps,
+        "num_generations": num_generations,
+    }
+    (adapter_dir / "run.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+    del model
+    gc.collect()
+    torch.cuda.empty_cache()
+    return metadata
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--experiment", required=True, choices=["E0", "E1", "E2", "E3", "E4"])
+    parser.add_argument("--experiment", required=True, choices=["E0", "E1", "E2", "E3", "E4", "E5"])
     parser.add_argument("--rank", type=int, choices=[4, 64])
     parser.add_argument("--data-fraction", type=float, choices=[0.1, 1.0])
     args = parser.parse_args()
@@ -288,6 +399,14 @@ def main() -> None:
         pred = ROOT / "work/e0.jsonl"
         infer("test", pred)
         score("E0", pred)
+        return
+
+    if experiment == "E5":
+        config = load_config("e5")
+        metadata = train_grpo(experiment, config)
+        pred = ROOT / "work" / f"{experiment.lower()}.jsonl"
+        infer("test", pred, ROOT / "work" / experiment.lower() / "adapter")
+        score(experiment, pred, metadata)
         return
 
     config = load_config(experiment if experiment != "E4" else "E1")
@@ -312,3 +431,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
